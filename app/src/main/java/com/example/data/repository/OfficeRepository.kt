@@ -19,12 +19,25 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class OfficeRepository(
     private val officeDao: OfficeDao,
-    private val context: Context
+    val context: Context
 ) {
+    private val sharedPrefs by lazy {
+        context.getSharedPreferences("dochub_prefs", Context.MODE_PRIVATE)
+    }
+
+    fun getStringPreference(key: String, defaultValue: String): String {
+        return sharedPrefs.getString(key, defaultValue) ?: defaultValue
+    }
+
+    fun setStringPreference(key: String, value: String) {
+        sharedPrefs.edit().putString(key, value).apply()
+    }
+
     // OkHttp Client configured according to gemini-api guidelines (60-second timeouts)
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -207,263 +220,27 @@ class OfficeRepository(
         }
     }
 
-    // --- Seed Default Documents on First Launch ---
+    // --- Seed Default Documents on First Launch (Disabled as per user request to remove sample files) ---
     suspend fun seedDefaultDocuments() = withContext(Dispatchers.IO) {
-        val existing = officeDao.getAllDocuments().first()
-        if (existing.isNotEmpty()) return@withContext
+        // Disabled - starting with a 100% clean, empty, real workspace.
+        return@withContext
+    }
 
-        Log.d("OfficeRepository", "Seeding default office documents...")
-
-        // 1. PDF Seed
-        insertDocument(
-            DocumentEntity(
-                name = "Financial Annual Report 2026.pdf",
-                type = "pdf",
-                content = """
-                    ---PAGE_BREAK---
-                    DOCHUB OFFICE SOLUTIONS - ANNUAL BUSINESS ANALYSIS 2026
-                    =======================================================
-                    Date: July 2026
-                    Author: Chief Financial Officer
-                    
-                    1. OVERVIEW & VISION
-                    DocHub Office is a premier all-in-one suite bridging files, spreadsheets, and artificial intelligence into a fast, battery-optimized, responsive experience. Over the last fiscal year, our offline-first architecture has enabled millions of devices to process office formats securely.
-                    
-                    2. REVENUE VELOCITY
-                    Our premium subscription services grew by 42% year-over-year, driven by enterprise demand for local document encryption, smart PDF annotation layers, and handwriting OCR capture.
-                    ---PAGE_BREAK---
-                    FINANCIAL METRICS SUMMARY
-                    =========================
-                    - Total Q1 Net Revenue: $1,240,000
-                    - Total Q2 Net Revenue: $1,580,000
-                    - Operational Overhead: $450,000
-                    - Net Profit Margin: 74.2%
-                    
-                    3. KEY RECOMMENDATIONS
-                    - Expand local ML Kit capabilities for offline OCR translator systems.
-                    - Continue standardizing database schemas via Room persistence.
-                    - Support dynamic Material You themes for a personalized UX.
-                    ---PAGE_BREAK---
-                    Form Fillable Fields:
-                    [Company Name: DocHub Inc.]
-                    [Employee Name:               ]
-                    [Signature:                    ]
-                    [Date: 11/07/2026]
-                """.trimIndent(),
-                size = 142400,
-                category = "PDFs",
-                isRecent = true,
-                isFavorite = true,
-                tags = "Financial,Report,Q2"
-            )
-        )
-
-        // 2. Word Seed
-        insertDocument(
-            DocumentEntity(
-                name = "Marketing Strategy Proposal.docx",
-                type = "docx",
-                content = """
-                    # MARKETING STRATEGY PROPOSAL 2026
-                    ## Product Name: DocHub Office Suite
-                    
-                    ### 1. Executive Summary
-                    This proposal outlines the product launch campaigns, key customer demographics, and user acquisition goals for the DocHub Office app on Android. Our key differentiator is a highly optimized, responsive Material 3 experience that operates fully offline with localized AI tools.
-                    
-                    ### 2. Marketing Channels
-                    *   **Organic Search & Tech Blogs:** Highlight offline PDF annotation and spreadsheets.
-                    *   **Developer Forums:** Share open-source wrappers, performance tips, and Room database integrations.
-                    *   **App Store Optimization (ASO):** Focus on keywords: PDF reader, Word editor, Excel spreadsheet, PowerPoint, OCR.
-                    
-                    ### 3. Campaign Timeline
-                    - **Phase 1 (Pre-launch):** Interactive beta testing with 500 power users.
-                    - **Phase 2 (Launch):** Press releases and tech video features.
-                    - **Phase 3 (Expansion):** Educational partnerships with offline reading tools.
-                    
-                    ### 4. Template Placeholder Values
-                    - **Contact Person:** info@dochub.office
-                    - **Target Launch Date:** August 1st, 2026
-                    - **Approved Budget:** ${'$'}25,000
-                """.trimIndent(),
-                size = 85200,
-                category = "Word Documents",
-                isRecent = true,
-                tags = "Marketing,Proposal,Doc"
-            )
-        )
-
-        // 3. Spreadsheet Seed (Serialized JSON Table representation)
-        val sheetsJson = """
-            {
-              "sheets": [
-                {
-                  "name": "Q3 Revenue",
-                  "rows": [
-                    ["Category", "Allocated", "Spent", "Remaining"],
-                    ["R&D Dev", "12000", "9500", "=B2-C2"],
-                    ["Marketing Campaign", "8000", "6200", "=B3-C3"],
-                    ["Server Infrastructure", "4500", "4100", "=B4-C4"],
-                    ["Office Administration", "2500", "2200", "=B5-C5"],
-                    ["Total", "=SUM(B2:B5)", "=SUM(C2:C5)", "=SUM(D2:D5)"]
-                  ]
-                },
-                {
-                  "name": "Project Milestones",
-                  "rows": [
-                    ["Milestone", "Task Lead", "Target Date", "Status"],
-                    ["Room Integration", "Anointed", "12/07/2026", "Completed"],
-                    ["Compose Editors", "Developer", "15/07/2026", "In Progress"],
-                    ["AI Assistant UI", "AI Studio", "18/07/2026", "Planning"]
-                  ]
-                }
-              ]
+    fun savePhysicalFile(name: String, content: String): File? {
+        return try {
+            val docsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS)
+            if (docsDir != null) {
+                if (!docsDir.exists()) docsDir.mkdirs()
+                val file = File(docsDir, name)
+                file.writeText(content)
+                Log.d("OfficeRepository", "Successfully saved physical file to ${file.absolutePath}")
+                file
+            } else {
+                null
             }
-        """.trimIndent()
-        insertDocument(
-            DocumentEntity(
-                name = "Company Budget Q3.xlsx",
-                type = "xlsx",
-                content = sheetsJson,
-                size = 48500,
-                category = "Excel Sheets",
-                isRecent = true,
-                isFavorite = true,
-                tags = "Budget,Excel,Finance"
-            )
-        )
-
-        // 4. PowerPoint Seed
-        val pptJson = """
-            [
-              {
-                "title": "DocHub Office Pitch",
-                "subtitle": "The Next-Gen All-In-One Office Suite",
-                "notes": "Slide 1 Notes: Welcome investors and tech partners. Introduce the core value proposition: WPS + Adobe Acrobat + Local AI on mobile."
-              },
-              {
-                "title": "The Problem we Solve",
-                "subtitle": "Bloated apps, slow loading, heavy cloud dependencies",
-                "notes": "Slide 2 Notes: Competitors take 10+ seconds to load basic files. They require heavy sign-ups and break when offline. DocHub loads instantly and works offline."
-              },
-              {
-                "title": "Interactive Compose Grid",
-                "subtitle": "Innovative views for PDFs, XLSX, CSV & JSON",
-                "notes": "Slide 3 Notes: Explain the spreadsheet cells computation engine. SUM and subtraction work out of the box."
-              },
-              {
-                "title": "AI Assistant & OCR",
-                "subtitle": "Leveraging Gemini to rewrite, summarize, translate",
-                "notes": "Slide 4 Notes: Users can tap the floating assistant button in any file to translate, summarize, or query elements immediately."
-              }
-            ]
-        """.trimIndent()
-        insertDocument(
-            DocumentEntity(
-                name = "DocHub App Pitch.pptx",
-                type = "pptx",
-                content = pptJson,
-                size = 112000,
-                category = "PowerPoint",
-                tags = "Pitch,Investor,Slides"
-              )
-        )
-
-        // 5. EPUB Book Seed
-        insertDocument(
-            DocumentEntity(
-                name = "The Art of Modern Mobile Dev.epub",
-                type = "epub",
-                content = """
-                    CHAPTER 1: PRINCIPLES OF RECONSTRUCTIVE ARCHITECTURE
-                    ===================================================
-                    Mobile engineering requires an exceptional harmony between visual aesthetics and computational resource management. Developers must construct systems that consume minimal memory, start up within milliseconds, and preserve battery, while projecting a gorgeous, premium UI.
-                    
-                    CHAPTER 2: REACTIVE STATE MANAGEMENT IN COMPOSE
-                    ==============================================
-                    Jetpack Compose transforms how UI states are managed. By wrapping state observers inside flows (e.g. StateFlow) and collecting them safely with lifecycle awareness, recompositions are narrowed to only modified components. This ensures 120 FPS scrolling speeds on affordable, lower-end devices.
-                    
-                    CHAPTER 3: SECURE OFFLINE ARCHITECTURE
-                    ======================================
-                    Privacy is a foundational pillar of user trust. Storing information inside offline Room databases, securing files with local encryption vaults, and deploying on-device AI operations means user documents never leave the physical device unless explicitly authorized.
-                """.trimIndent(),
-                size = 230400,
-                category = "Books",
-                tags = "Book,Programming,Kotlin"
-            )
-        )
-
-        // 6. JSON Config Seed
-        insertDocument(
-            DocumentEntity(
-                name = "Developer Configuration.json",
-                type = "json",
-                content = """
-                    {
-                      "appName": "DocHub Office",
-                      "versionCode": 102,
-                      "features": {
-                        "offlineFirst": true,
-                        "smartScanning": true,
-                        "aiSummarization": true,
-                        "excelFormulaCalculation": true,
-                        "pdfSigningAndAnnotations": true
-                      },
-                      "theme": {
-                        "defaultMode": "Dark / AMOLED",
-                        "accentColor": "#00A86B",
-                        "safeAreaPaddingDp": 16
-                      },
-                      "supportedFormats": ["pdf", "docx", "xlsx", "pptx", "txt", "json", "csv", "epub"]
-                    }
-                """.trimIndent(),
-                size = 520,
-                category = "JSON Files",
-                tags = "Developer,Config,JSON"
-            )
-        )
-
-        // 7. CSV Seed
-        insertDocument(
-            DocumentEntity(
-                name = "User Feedback Logs.csv",
-                type = "csv",
-                content = """
-                    ID,UserEmail,Rating,ReviewText,Approved
-                    1,john.doe@email.com,5,Absolutely amazing spreadsheet calculation speed!,TRUE
-                    2,sara.smith@email.com,4,The PDF signature drawer works really smoothly.,TRUE
-                    3,alex.jones@email.com,5,The AI document summary was extremely accurate.,TRUE
-                    4,maria.g@email.com,5,Finally an office app that doesn't force me to register.,TRUE
-                """.trimIndent(),
-                size = 380,
-                category = "CSV Files",
-                tags = "Feedback,CSV,Data"
-            )
-        )
-
-        // 8. Markdown Note Seed
-        insertDocument(
-            DocumentEntity(
-                name = "Release Notes v2.1.md",
-                type = "md",
-                content = """
-                    # Release Notes v2.1 - DocHub Suite
-                    
-                    We are thrilled to ship the next major revision of DocHub Office, featuring state-of-the-art interactive document editors!
-                    
-                    ### Key Enhancements
-                    1.  **Excel Sheets Engine**: Cell editing, multi-sheet tabs, and computation of formulas like `=SUM()` are now fully active.
-                    2.  **PDF Signature & Drawings**: Smooth freeform drawing, highlighting, custom notes, and fillable form support.
-                    3.  **Local AI Assistant**: Contextual document query, rewriting, and summaries even when working in fully offline remote areas.
-                    4.  **Security Vault**: Lock sensitive files inside an AES-encrypted vault with a PIN.
-                    
-                    ---
-                    *Thank you for supporting DocHub! Keep writing clean code.*
-                """.trimIndent(),
-                size = 1200,
-                category = "Notes",
-                isFavorite = true,
-                tags = "Release,Markdown,Documentation"
-            )
-        )
+        } catch (e: Exception) {
+            Log.e("OfficeRepository", "Failed to save physical file: ${e.message}", e)
+            null
+        }
     }
 }

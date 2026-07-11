@@ -15,6 +15,29 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val permissions = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            arrayOf(
+                android.Manifest.permission.CAMERA,
+                android.Manifest.permission.READ_MEDIA_IMAGES
+            )
+        } else {
+            arrayOf(
+                android.Manifest.permission.CAMERA,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        }
+
+        val requestPermissionLauncher = registerForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+        ) { results ->
+            results.forEach { (permission, isGranted) ->
+                android.util.Log.d("MainActivity", "Permission $permission status: $isGranted")
+            }
+        }
+
+        requestPermissionLauncher.launch(permissions)
         setContent {
             val app = application as DocHubApplication
             val viewModel: OfficeViewModel = androidx.lifecycle.viewmodel.compose.viewModel(

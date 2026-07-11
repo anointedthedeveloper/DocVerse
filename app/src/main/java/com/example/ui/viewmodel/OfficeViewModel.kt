@@ -87,10 +87,24 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
 
     fun setAppTheme(theme: String) {
         _appTheme.value = theme
+        repository.setStringPreference("app_theme", theme)
     }
 
     // --- Initialize ---
     init {
+        val theme = repository.getStringPreference("app_theme", "light")
+        _appTheme.value = theme
+        
+        val apiKey = repository.getStringPreference("user_api_key", "MY_GEMINI_API_KEY")
+        _userApiKey.value = apiKey
+        
+        val pin = repository.getStringPreference("app_pin", "")
+        _appPin.value = pin
+        _isAppLocked.value = pin.isNotEmpty()
+        
+        val cloud = repository.getStringPreference("cloud_provider", "Google Drive")
+        _cloudProvider.value = cloud
+
         // Automatic Folder Scanner monitoring simulation on app start
         viewModelScope.launch {
             monitorAndIndexFolders()
@@ -114,14 +128,24 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
     // --- CRUD Operations ---
     fun createDocument(name: String, type: String, content: String, category: String) {
         viewModelScope.launch {
+            val fullName = if (name.endsWith(".$type")) name else "$name.$type"
+            // Save to physical documents folder
+            repository.savePhysicalFile(fullName, content)
+
             val doc = DocumentEntity(
-                name = if (name.endsWith(".$type")) name else "$name.$type",
+                name = fullName,
                 type = type,
                 content = content,
                 size = content.toByteArray().size.toLong(),
                 category = category
             )
-            repository.insertDocument(doc)
+            val newId = repository.insertDocument(doc)
+            val inserted = repository.getDocumentById(newId)
+            if (inserted != null) {
+                setActiveDocument(inserted)
+            } else {
+                setActiveDocument(doc.copy(id = newId))
+            }
         }
     }
 
@@ -135,6 +159,16 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
         _activeDocument.value = updatedDoc
         viewModelScope.launch {
             repository.updateDocument(updatedDoc)
+            // Also write to physical file
+            repository.savePhysicalFile(updatedDoc.name, newContent)
+        }
+    }
+
+    fun saveActiveDocumentToDisk() {
+        val currentDoc = _activeDocument.value ?: return
+        viewModelScope.launch {
+            repository.updateDocument(currentDoc)
+            repository.savePhysicalFile(currentDoc.name, currentDoc.content)
         }
     }
 
@@ -256,12 +290,14 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
 
     fun setApiKey(key: String) {
         _userApiKey.value = key
+        repository.setStringPreference("user_api_key", key)
     }
 
     // --- Security Configuration ---
     fun setupSecurityPin(pin: String) {
         _appPin.value = pin
         _isAppLocked.value = pin.isNotEmpty()
+        repository.setStringPreference("app_pin", pin)
     }
 
     fun unlockApp(pin: String): Boolean {
@@ -290,6 +326,7 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
     // --- Cloud Sync ---
     fun setCloudProvider(provider: String) {
         _cloudProvider.value = provider
+        repository.setStringPreference("cloud_provider", provider)
     }
 
     fun triggerCloudSync() {
@@ -384,6 +421,19 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
                     size = bytes.size.toLong(),
                     category = category
                 )
+                // Write imported raw bytes to physical file system
+                try {
+                    val docsDir = repository.context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS)
+                    if (docsDir != null) {
+                        if (!docsDir.exists()) docsDir.mkdirs()
+                        val physicalFile = java.io.File(docsDir, name)
+                        physicalFile.writeBytes(bytes)
+                        Log.d("OfficeViewModel", "Successfully saved imported physical file: ${physicalFile.absolutePath}")
+                    }
+                } catch (ex: Exception) {
+                    Log.e("OfficeViewModel", "Failed to save physical copy of imported file: ${ex.message}")
+                }
+
                 val id = repository.insertDocument(doc)
                 val inserted = repository.getDocumentById(id)
                 if (inserted != null) {
