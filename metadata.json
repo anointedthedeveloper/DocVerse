@@ -1,0 +1,6 @@
+{
+  "name": "DocVerse",
+  "description": "Your Complete Office & Document Companion. Read, edit, create, organize, and convert PDFs, Word documents, Excel spreadsheets, and developer files with OCR scanning and secure vault storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
