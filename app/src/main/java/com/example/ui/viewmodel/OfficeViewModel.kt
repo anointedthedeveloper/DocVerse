@@ -77,6 +77,13 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
     private val _isAiLoading = MutableStateFlow(false)
     val isAiLoading: StateFlow<Boolean> = _isAiLoading.asStateFlow()
 
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    fun setLoading(loading: Boolean) {
+        _isLoading.value = loading
+    }
+
     // --- API Key configuration ---
     private val _userApiKey = MutableStateFlow("MY_GEMINI_API_KEY")
     val userApiKey: StateFlow<String> = _userApiKey.asStateFlow()
@@ -88,6 +95,60 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
     fun setAppTheme(theme: String) {
         _appTheme.value = theme
         repository.setStringPreference("app_theme", theme)
+    }
+
+    // --- Multi-Selection Mode ---
+    private val _isSelectionMode = MutableStateFlow(false)
+    val isSelectionMode: StateFlow<Boolean> = _isSelectionMode.asStateFlow()
+
+    private val _selectedDocumentIds = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedDocumentIds: StateFlow<Set<Long>> = _selectedDocumentIds.asStateFlow()
+
+    fun enterSelectionMode(documentId: Long) {
+        _isSelectionMode.value = true
+        _selectedDocumentIds.value = setOf(documentId)
+    }
+
+    fun exitSelectionMode() {
+        _isSelectionMode.value = false
+        _selectedDocumentIds.value = emptySet()
+    }
+
+    fun toggleDocumentSelection(documentId: Long) {
+        val current = _selectedDocumentIds.value
+        if (current.contains(documentId)) {
+            val next = current - documentId
+            _selectedDocumentIds.value = next
+            if (next.isEmpty()) {
+                _isSelectionMode.value = false
+            }
+        } else {
+            _selectedDocumentIds.value = current + documentId
+            _isSelectionMode.value = true
+        }
+    }
+
+    fun selectAllDocuments(documents: List<DocumentEntity>) {
+        _selectedDocumentIds.value = documents.map { it.id }.toSet()
+        _isSelectionMode.value = true
+    }
+
+    fun deleteSelectedDocuments() {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                val ids = _selectedDocumentIds.value
+                val docsToDelete = allDocuments.value.filter { ids.contains(it.id) }
+                docsToDelete.forEach { doc ->
+                    repository.deleteDocument(doc)
+                }
+                exitSelectionMode()
+            } catch (e: Exception) {
+                Log.e("OfficeViewModel", "Error deleting selected files: ${e.message}")
+            } finally {
+                _isLoading.value = false
+            }
+        }
     }
 
     // --- Initialize ---
@@ -117,10 +178,10 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
 
     fun setActiveDocument(document: DocumentEntity?) {
         _activeDocument.value = document
-        if (document != null && !document.isRecent) {
-            // Mark as recent when opened
+        if (document != null) {
+            // Mark as recent and update accessed/modified time when opened
             viewModelScope.launch {
-                repository.updateDocument(document.copy(isRecent = true))
+                repository.updateDocument(document.copy(isRecent = true, modifiedAt = System.currentTimeMillis()))
             }
         }
     }
@@ -475,6 +536,7 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
 
     fun loadDocumentFromUri(contentResolver: android.content.ContentResolver, uri: android.net.Uri) {
         viewModelScope.launch {
+            _isLoading.value = true
             try {
                 var name = "Imported_Document"
                 val cursor = contentResolver.query(uri, null, null, null, null)
@@ -563,6 +625,8 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
                 }
             } catch (e: Exception) {
                 Log.e("OfficeViewModel", "Error loading document from Uri: ${e.message}", e)
+            } finally {
+                _isLoading.value = false
             }
         }
     }
@@ -571,6 +635,7 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
         try {
             val sharedStrings = mutableListOf<String>()
             val sheetCells = mutableMapOf<Int, MutableMap<Int, String>>()
+            val sheetStyles = mutableMapOf<String, org.json.JSONObject>()
             var maxRow = 0
             var maxCol = 0
 
@@ -578,12 +643,15 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
             var entry = zipIn.nextEntry
             var sheet1XmlBytes: ByteArray? = null
             var sharedStringsXmlBytes: ByteArray? = null
+            var stylesXmlBytes: ByteArray? = null
 
             while (entry != null) {
                 if (entry.name == "xl/sharedStrings.xml") {
                     sharedStringsXmlBytes = zipIn.readBytes()
                 } else if (entry.name == "xl/worksheets/sheet1.xml") {
                     sheet1XmlBytes = zipIn.readBytes()
+                } else if (entry.name == "xl/styles.xml") {
+                    stylesXmlBytes = zipIn.readBytes()
                 }
                 zipIn.closeEntry()
                 entry = zipIn.nextEntry
@@ -595,6 +663,86 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
                 val matcher = java.util.regex.Pattern.compile("<t\\b[^>]*>([^<]*)</t>").matcher(xmlStr)
                 while (matcher.find()) {
                     sharedStrings.add(matcher.group(1) ?: "")
+                }
+            }
+
+            val fontsList = mutableListOf<org.json.JSONObject>()
+            val fillsList = mutableListOf<String>()
+            val xfList = mutableListOf<org.json.JSONObject>()
+
+            if (stylesXmlBytes != null) {
+                val xmlStr = String(stylesXmlBytes, Charsets.UTF_8)
+                
+                // Parse fonts
+                val fontMatcher = java.util.regex.Pattern.compile("<font\\b[^>]*>(.*?)</font>").matcher(xmlStr)
+                while (fontMatcher.find()) {
+                    val fontBody = fontMatcher.group(1) ?: ""
+                    val isBold = fontBody.contains("<b/>") || fontBody.contains("<b>")
+                    val isItalic = fontBody.contains("<i/>") || fontBody.contains("<i>")
+                    var colorHex = "#000000"
+                    val colMatcher = java.util.regex.Pattern.compile("<color\\b[^>]*\\brgb=\"([A-Fa-f0-9]{8})\"").matcher(fontBody)
+                    if (colMatcher.find()) {
+                        val rgb = colMatcher.group(1) ?: ""
+                        if (rgb.length == 8) {
+                            colorHex = "#" + rgb.substring(2)
+                        }
+                    }
+                    val fontJson = org.json.JSONObject()
+                    fontJson.put("bold", isBold)
+                    fontJson.put("italic", isItalic)
+                    fontJson.put("textColor", colorHex)
+                    fontsList.add(fontJson)
+                }
+
+                // Parse fills
+                val fillMatcher = java.util.regex.Pattern.compile("<fill\\b[^>]*>(.*?)</fill>").matcher(xmlStr)
+                while (fillMatcher.find()) {
+                    val fillBody = fillMatcher.group(1) ?: ""
+                    var bgHex = "#FFFFFF"
+                    val fgMatcher = java.util.regex.Pattern.compile("<fgColor\\b[^>]*\\brgb=\"([A-Fa-f0-9]{8})\"").matcher(fillBody)
+                    if (fgMatcher.find()) {
+                        val rgb = fgMatcher.group(1) ?: ""
+                        if (rgb.length == 8) {
+                            bgHex = "#" + rgb.substring(2)
+                        }
+                    }
+                    fillsList.add(bgHex)
+                }
+
+                // Parse cellXfs xfs
+                val cellXfsMatcher = java.util.regex.Pattern.compile("<cellXfs\\b[^>]*>(.*?)</cellXfs>").matcher(xmlStr)
+                if (cellXfsMatcher.find()) {
+                    val xfsBody = cellXfsMatcher.group(1) ?: ""
+                    val xfMatcher = java.util.regex.Pattern.compile("<xf\\b([^>]*)>").matcher(xfsBody)
+                    while (xfMatcher.find()) {
+                        val attrs = xfMatcher.group(1) ?: ""
+                        val xfJson = org.json.JSONObject()
+                        
+                        val fontIdMatcher = java.util.regex.Pattern.compile("fontId=\"(\\d+)\"").matcher(attrs)
+                        if (fontIdMatcher.find()) {
+                            val fId = fontIdMatcher.group(1)?.toIntOrNull() ?: 0
+                            if (fId in fontsList.indices) {
+                                val fontJson = fontsList[fId]
+                                xfJson.put("bold", fontJson.optBoolean("bold"))
+                                xfJson.put("italic", fontJson.optBoolean("italic"))
+                                if (fontJson.optString("textColor") != "#000000") {
+                                    xfJson.put("textColor", fontJson.optString("textColor"))
+                                }
+                            }
+                        }
+
+                        val fillIdMatcher = java.util.regex.Pattern.compile("fillId=\"(\\d+)\"").matcher(attrs)
+                        if (fillIdMatcher.find()) {
+                            val fId = fillIdMatcher.group(1)?.toIntOrNull() ?: 0
+                            if (fId in fillsList.indices) {
+                                val bg = fillsList[fId]
+                                if (bg != "#FFFFFF" && bg != "#000000") {
+                                    xfJson.put("bgColor", bg)
+                                }
+                            }
+                        }
+                        xfList.add(xfJson)
+                    }
                 }
             }
 
@@ -641,6 +789,18 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
 
                         val rowMap = sheetCells.getOrPut(rowNum) { mutableMapOf() }
                         rowMap[colNum] = value
+
+                        // Extract cell formatting if style index is set
+                        val sMatcher = java.util.regex.Pattern.compile("\\bs=\"(\\d+)\"").matcher(attrs)
+                        if (sMatcher.find()) {
+                            val styleIdx = sMatcher.group(1)?.toIntOrNull()
+                            if (styleIdx != null && styleIdx in xfList.indices) {
+                                val styleJson = xfList[styleIdx]
+                                if (styleJson.length() > 0) {
+                                    sheetStyles["${rowNum}_${colNum}"] = styleJson
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -668,7 +828,12 @@ class OfficeViewModel(private val repository: OfficeRepository) : ViewModel() {
             }
             jsonRows.append("]")
 
-            return "{\"sheets\": [{\"name\": \"Sheet1\", \"rows\": $jsonRows}]}"
+            val stylesJson = org.json.JSONObject()
+            sheetStyles.forEach { (key, style) ->
+                stylesJson.put(key, style)
+            }
+
+            return "{\"sheets\": [{\"name\": \"Sheet1\", \"rows\": $jsonRows, \"styles\": $stylesJson}]}"
         } catch (e: Exception) {
             Log.e("OfficeViewModel", "Error parsing XLSX bytes: ${e.message}", e)
             return "{\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[\"A1\", \"B1\", \"C1\"], [\"\", \"\", \"\"], [\"\", \"\", \"\"]]}]}"

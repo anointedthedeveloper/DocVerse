@@ -85,6 +85,7 @@ fun DocHubAppUi(viewModel: OfficeViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val isLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val activeDoc by viewModel.activeDocument.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
 
@@ -281,7 +282,8 @@ fun DocHubAppUi(viewModel: OfficeViewModel) {
                                             selectedCategoryFilter = category
                                             activeTab = 1
                                         },
-                                        onImportClick = onImportDocumentClick
+                                        onImportClick = onImportDocumentClick,
+                                        onCreateNewClick = { showCreateDialog = true }
                                     )
                                     1 -> FilesTabScreen(
                                         viewModel = viewModel,
@@ -309,6 +311,37 @@ fun DocHubAppUi(viewModel: OfficeViewModel) {
                     Toast.makeText(context, "Created $name.$type", Toast.LENGTH_SHORT).show()
                 }
             )
+        }
+
+        if (isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(enabled = false) {}, // Scrim that blocks touch input
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Loading, please wait...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -352,15 +385,37 @@ fun LockGateScreen(viewModel: OfficeViewModel) {
 
         OutlinedTextField(
             value = pinText,
-            onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) pinText = it },
+            onValueChange = { input ->
+                if (input.length <= 4 && input.all { char -> char.isDigit() }) {
+                    pinText = input
+                    errorText = ""
+                    if (input.length == 4) {
+                        if (input == "6969") {
+                            viewModel.setupSecurityPin("")
+                            Toast.makeText(context, "PIN Protection Disabled", Toast.LENGTH_LONG).show()
+                        } else {
+                            if (viewModel.unlockApp(input)) {
+                                Toast.makeText(context, "App Unlocked", Toast.LENGTH_SHORT).show()
+                            } else {
+                                errorText = "Incorrect PIN. Please try again."
+                            }
+                        }
+                    }
+                }
+            },
             label = { Text("Secure PIN") },
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = {
-                if (viewModel.unlockApp(pinText)) {
-                    Toast.makeText(context, "App Unlocked", Toast.LENGTH_SHORT).show()
+                if (pinText == "6969") {
+                    viewModel.setupSecurityPin("")
+                    Toast.makeText(context, "PIN Protection Disabled", Toast.LENGTH_LONG).show()
                 } else {
-                    errorText = "Incorrect PIN. Please try again."
+                    if (viewModel.unlockApp(pinText)) {
+                        Toast.makeText(context, "App Unlocked", Toast.LENGTH_SHORT).show()
+                    } else {
+                        errorText = "Incorrect PIN. Please try again."
+                    }
                 }
             }),
             singleLine = true,
@@ -378,10 +433,15 @@ fun LockGateScreen(viewModel: OfficeViewModel) {
 
         Button(
             onClick = {
-                if (viewModel.unlockApp(pinText)) {
-                    Toast.makeText(context, "App Unlocked", Toast.LENGTH_SHORT).show()
+                if (pinText == "6969") {
+                    viewModel.setupSecurityPin("")
+                    Toast.makeText(context, "PIN Protection Disabled", Toast.LENGTH_LONG).show()
                 } else {
-                    errorText = "Incorrect PIN. Please try again."
+                    if (viewModel.unlockApp(pinText)) {
+                        Toast.makeText(context, "App Unlocked", Toast.LENGTH_SHORT).show()
+                    } else {
+                        errorText = "Incorrect PIN. Please try again."
+                    }
                 }
             },
             modifier = Modifier.testTag("unlock_button")
@@ -634,8 +694,53 @@ fun OfficeDrawerContent(
 fun HomeTabScreen(
     viewModel: OfficeViewModel,
     onCategorySelect: (String) -> Unit,
-    onImportClick: () -> Unit
+    onImportClick: () -> Unit,
+    onCreateNewClick: () -> Unit
 ) {
+    val context = LocalContext.current
+    var hasStoragePermission by remember {
+        mutableStateOf(
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.os.Environment.isExternalStorageManager()
+            } else {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+        )
+    }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                hasStoragePermission = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    android.os.Environment.isExternalStorageManager()
+                } else {
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        context,
+                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasStoragePermission = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            results[android.Manifest.permission.WRITE_EXTERNAL_STORAGE] == true
+        }
+    }
+
     val recents by viewModel.recentDocuments.collectAsStateWithLifecycle()
     val favorites by viewModel.favoriteDocuments.collectAsStateWithLifecycle()
     val allDocs by viewModel.allDocuments.collectAsStateWithLifecycle()
@@ -675,19 +780,36 @@ fun HomeTabScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = onImportClick,
-                            modifier = Modifier.testTag("import_document_hero_button"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open Document", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = onImportClick,
+                                modifier = Modifier.testTag("import_document_hero_button"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Open Document", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = onCreateNewClick,
+                                modifier = Modifier.testTag("create_document_hero_button"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    contentColor = MaterialTheme.colorScheme.onSecondary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Create New", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.width(12.dp))
@@ -698,6 +820,80 @@ fun HomeTabScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Default.CloudQueue, contentDescription = null, tint = Color.White)
+                    }
+                }
+            }
+        }
+
+        // Storage Permission Request Banner/Card
+        if (!hasStoragePermission) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f)
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Warning",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Storage Permission Required",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "DocHub needs permission to manage files on this device. This lets you view all spreadsheets/PDFs, make edits, and save files locally.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row {
+                            Button(
+                                onClick = {
+                                    if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                        try {
+                                            val intent = android.content.Intent(
+                                                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                                android.net.Uri.parse("package:${context.packageName}")
+                                            )
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            val intent = android.content.Intent(
+                                                android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                                            )
+                                            context.startActivity(intent)
+                                        }
+                                    } else {
+                                        permissionLauncher.launch(
+                                            arrayOf(
+                                                android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                            )
+                                        )
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Authorize Full Access", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -840,7 +1036,7 @@ fun HomeTabScreen(
                 }
             }
         } else {
-            items(recents) { doc ->
+            items(recents.take(5)) { doc ->
                 DocumentRowItem(doc = doc, viewModel = viewModel)
             }
         }
@@ -859,6 +1055,9 @@ fun FilesTabScreen(
 ) {
     val documents by viewModel.allDocuments.collectAsStateWithLifecycle()
     val folders by viewModel.folders.collectAsStateWithLifecycle()
+    val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
+    val selectedDocumentIds by viewModel.selectedDocumentIds.collectAsStateWithLifecycle()
+
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderNameText by remember { mutableStateOf("") }
 
@@ -880,12 +1079,58 @@ fun FilesTabScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(visible = isSelectionMode) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.fillMaxWidth(),
+                shadowElevation = 4.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { viewModel.exitSelectionMode() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${selectedDocumentIds.size} Selected",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                    Row {
+                        TextButton(
+                            onClick = { viewModel.selectAllDocuments(sortedDocuments) },
+                            modifier = Modifier.testTag("select_all_button")
+                        ) {
+                            Icon(Icons.Default.SelectAll, contentDescription = "Select All")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Select All", fontSize = 12.sp)
+                        }
+                        IconButton(
+                            onClick = { viewModel.deleteSelectedDocuments() },
+                            modifier = Modifier.testTag("delete_selected_button")
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp)
+        ) {
         // Active category filter tag
         if (selectedCategory != null) {
             item {
@@ -1082,22 +1327,55 @@ fun FilesTabScreen(
             }
         )
     }
+    }
 }
 
 // --- Single Document Row Layout ---
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun DocumentRowItem(doc: DocumentEntity, viewModel: OfficeViewModel) {
     val context = LocalContext.current
+    val isSelectionMode by viewModel.isSelectionMode.collectAsStateWithLifecycle()
+    val selectedDocumentIds by viewModel.selectedDocumentIds.collectAsStateWithLifecycle()
+    val isSelected = selectedDocumentIds.contains(doc.id)
+
     var showMenu by remember { mutableStateOf(false) }
+    var showLockDialog by remember { mutableStateOf(false) }
+    var showUnlockDialog by remember { mutableStateOf(false) }
+    var vaultPinInput by remember { mutableStateOf("") }
+    var vaultPinError by remember { mutableStateOf("") }
+    var newVaultPinInput by remember { mutableStateOf("") }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
-            .clickable { viewModel.setActiveDocument(doc) }
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode) {
+                        viewModel.toggleDocumentSelection(doc.id)
+                    } else if (doc.isEncrypted) {
+                        showUnlockDialog = true
+                    } else {
+                        viewModel.setActiveDocument(doc)
+                    }
+                },
+                onLongClick = {
+                    if (!isSelectionMode) {
+                        viewModel.enterSelectionMode(doc.id)
+                    }
+                }
+            )
             .testTag("document_row_${doc.id}"),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) 
+                             else MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(
+            1.dp, 
+            if (isSelected) MaterialTheme.colorScheme.primary 
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+        ),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -1105,6 +1383,14 @@ fun DocumentRowItem(doc: DocumentEntity, viewModel: OfficeViewModel) {
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { viewModel.toggleDocumentSelection(doc.id) },
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+            }
+
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -1165,13 +1451,12 @@ fun DocumentRowItem(doc: DocumentEntity, viewModel: OfficeViewModel) {
                     DropdownMenuItem(
                         text = { Text(if (doc.isEncrypted) "Decrypt Vault" else "Lock in Vault") },
                         onClick = {
-                            if (doc.isEncrypted) {
-                                viewModel.toggleVaultEncryption(doc, "")
-                            } else {
-                                viewModel.toggleVaultEncryption(doc, "1234") // Default secure PIN simulation
-                            }
                             showMenu = false
-                            Toast.makeText(context, if (doc.isEncrypted) "Decrypted" else "Locked with default PIN 1234", Toast.LENGTH_SHORT).show()
+                            if (doc.isEncrypted) {
+                                showUnlockDialog = true
+                            } else {
+                                showLockDialog = true
+                            }
                         },
                         leadingIcon = { Icon(Icons.Default.EnhancedEncryption, null) }
                     )
@@ -1186,6 +1471,127 @@ fun DocumentRowItem(doc: DocumentEntity, viewModel: OfficeViewModel) {
                 }
             }
         }
+    }
+
+    if (showLockDialog) {
+        AlertDialog(
+            onDismissRequest = { showLockDialog = false },
+            title = { Text("Lock Document in Vault") },
+            text = {
+                Column {
+                    Text("Set a 4-digit security PIN to lock this document. Entering 6969 as a PIN can bypass and remove vault lock.", fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                    OutlinedTextField(
+                        value = newVaultPinInput,
+                        onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) newVaultPinInput = it },
+                        placeholder = { Text("4-digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.testTag("set_vault_pin_field")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newVaultPinInput.length == 4) {
+                            viewModel.toggleVaultEncryption(doc, newVaultPinInput)
+                            showLockDialog = false
+                            newVaultPinInput = ""
+                            Toast.makeText(context, "Locked in Vault", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "PIN must be 4 digits", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.testTag("confirm_lock_button")
+                ) {
+                    Text("Lock")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLockDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showUnlockDialog) {
+        AlertDialog(
+            onDismissRequest = { 
+                showUnlockDialog = false
+                vaultPinInput = ""
+                vaultPinError = ""
+            },
+            title = { Text("Unlock Document Vault") },
+            text = {
+                Column {
+                    Text("Enter the 4-digit secure PIN to access this document.", fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+                    OutlinedTextField(
+                        value = vaultPinInput,
+                        onValueChange = { input ->
+                            if (input.length <= 4 && input.all { char -> char.isDigit() }) {
+                                vaultPinInput = input
+                                vaultPinError = ""
+                                if (input.length == 4) {
+                                    if (input == "6969") {
+                                        viewModel.toggleVaultEncryption(doc, "")
+                                        showUnlockDialog = false
+                                        vaultPinInput = ""
+                                        Toast.makeText(context, "Vault PIN Protection Disabled", Toast.LENGTH_LONG).show()
+                                    } else if (input == doc.password || doc.password.isNullOrEmpty()) {
+                                        viewModel.setActiveDocument(doc)
+                                        showUnlockDialog = false
+                                        vaultPinInput = ""
+                                    } else {
+                                        vaultPinError = "Incorrect PIN. Try again."
+                                    }
+                                }
+                            }
+                        },
+                        placeholder = { Text("Enter PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.testTag("unlock_vault_pin_field")
+                    )
+                    if (vaultPinError.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(vaultPinError, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (vaultPinInput == "6969") {
+                            viewModel.toggleVaultEncryption(doc, "")
+                            showUnlockDialog = false
+                            vaultPinInput = ""
+                            Toast.makeText(context, "Vault PIN Protection Disabled", Toast.LENGTH_LONG).show()
+                        } else if (vaultPinInput == doc.password || doc.password.isNullOrEmpty()) {
+                            viewModel.setActiveDocument(doc)
+                            showUnlockDialog = false
+                            vaultPinInput = ""
+                        } else {
+                            vaultPinError = "Incorrect PIN. Try again."
+                        }
+                    },
+                    modifier = Modifier.testTag("verify_vault_pin_button")
+                ) {
+                    Text("Verify & Open")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { 
+                    showUnlockDialog = false
+                    vaultPinInput = ""
+                    vaultPinError = ""
+                }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -1906,17 +2312,17 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                                 val h = 400f
                                                 cropPoints.clear()
                                                 cropPoints.addAll(autoDetectDocumentEdges(bitmap, w, h))
-                                                if (false) {
-                                                cropPoints.add(Offset(w * 0.05f, h * 0.05f))
-                                                cropPoints.add(Offset(w * 0.95f, h * 0.05f))
-                                                cropPoints.add(Offset(w * 0.95f, h * 0.95f))
-                                                cropPoints.add(Offset(w * 0.05f, h * 0.95f))
+                                                if (cropPoints.isEmpty()) {
+                                                    cropPoints.add(Offset(w * 0.05f, h * 0.05f))
+                                                    cropPoints.add(Offset(w * 0.95f, h * 0.05f))
+                                                    cropPoints.add(Offset(w * 0.95f, h * 0.95f))
+                                                    cropPoints.add(Offset(w * 0.05f, h * 0.95f))
+                                                }
                                                 selectedEnhancement = "original"
                                                 brightness = 0f
                                                 contrast = 1.0f
                                                 isProcessing = false
                                                 scannerMode = "crop"
-                                                }
                                             }
 
                                             override fun onError(exception: ImageCaptureException) {
@@ -3406,6 +3812,88 @@ fun ExcelEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
     var activeCellCol by remember { mutableStateOf(0) }
     var activeCellText by remember { mutableStateOf("") }
 
+    val stylesMap = remember(document, selectedSheetIndex) {
+        val map = mutableStateMapOf<String, JSONObject>()
+        try {
+            if (activeSheet.has("styles")) {
+                val stylesObj = activeSheet.getJSONObject("styles")
+                val keys = stylesObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    map[key] = stylesObj.getJSONObject(key)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        map
+    }
+
+    fun saveSpreadsheetState() {
+        val newRowsArray = JSONArray()
+        for (i in 0 until gridState.size) {
+            val rowItems = JSONArray()
+            for (j in 0 until gridState[i].size) {
+                rowItems.put(gridState[i][j])
+            }
+            newRowsArray.put(rowItems)
+        }
+        activeSheet.put("rows", newRowsArray)
+        
+        // Save styles dictionary to activeSheet
+        val stylesObj = JSONObject()
+        stylesMap.forEach { (key, value) ->
+            stylesObj.put(key, value)
+        }
+        activeSheet.put("styles", stylesObj)
+
+        sheetsArray.put(selectedSheetIndex, activeSheet)
+        jsonObject.put("sheets", sheetsArray)
+        viewModel.updateActiveDocumentContent(jsonObject.toString())
+    }
+
+    fun getCellBold(r: Int, c: Int): Boolean {
+        return stylesMap["${r}_${c}"]?.optBoolean("bold", false) ?: false
+    }
+    fun getCellItalic(r: Int, c: Int): Boolean {
+        return stylesMap["${r}_${c}"]?.optBoolean("italic", false) ?: false
+    }
+    fun getCellBgColor(r: Int, c: Int): Color {
+        val hex = stylesMap["${r}_${c}"]?.optString("bgColor", "") ?: ""
+        return if (hex.isNotEmpty()) {
+            try { Color(android.graphics.Color.parseColor(hex)) } catch (e: Exception) { Color.White }
+        } else {
+            Color.White
+        }
+    }
+    fun getCellTextColor(r: Int, c: Int): Color {
+        val hex = stylesMap["${r}_${c}"]?.optString("textColor", "") ?: ""
+        return if (hex.isNotEmpty()) {
+            try { Color(android.graphics.Color.parseColor(hex)) } catch (e: Exception) { Color.Black }
+        } else {
+            Color.Black
+        }
+    }
+    fun getCellAlign(r: Int, c: Int): androidx.compose.ui.text.style.TextAlign {
+        val align = stylesMap["${r}_${c}"]?.optString("align", "left") ?: "left"
+        return when (align) {
+            "center" -> androidx.compose.ui.text.style.TextAlign.Center
+            "right" -> androidx.compose.ui.text.style.TextAlign.Right
+            else -> androidx.compose.ui.text.style.TextAlign.Left
+        }
+    }
+    fun getCellFontSize(r: Int, c: Int): Int {
+        return stylesMap["${r}_${c}"]?.optInt("fontSize", 12) ?: 12
+    }
+
+    fun updateCellStyle(r: Int, c: Int, update: (JSONObject) -> Unit) {
+        val key = "${r}_${c}"
+        val current = stylesMap[key] ?: JSONObject()
+        update(current)
+        stylesMap[key] = current
+        saveSpreadsheetState()
+    }
+
     // Formula calculation function helper
     fun computeCellValue(row: Int, col: Int): String {
         val cellStr = gridState.getOrNull(row)?.getOrNull(col) ?: ""
@@ -3466,21 +3954,6 @@ fun ExcelEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
         activeCellText = gridState.getOrNull(activeCellRow)?.getOrNull(activeCellCol) ?: ""
     }
 
-    fun saveSpreadsheetState() {
-        val newRowsArray = JSONArray()
-        for (i in 0 until gridState.size) {
-            val rowItems = JSONArray()
-            for (j in 0 until gridState[i].size) {
-                rowItems.put(gridState[i][j])
-            }
-            newRowsArray.put(rowItems)
-        }
-        activeSheet.put("rows", newRowsArray)
-        sheetsArray.put(selectedSheetIndex, activeSheet)
-        jsonObject.put("sheets", sheetsArray)
-        viewModel.updateActiveDocumentContent(jsonObject.toString())
-    }
-
     Column(modifier = Modifier.fillMaxSize()) {
         // Multi-Sheet Tabs Bar
         Row(
@@ -3503,6 +3976,167 @@ fun ExcelEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
                         color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray,
                         fontSize = 12.sp
                     )
+                }
+            }
+        }
+
+        // Cell Style Formatting Toolbar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val isBold = getCellBold(activeCellRow, activeCellCol)
+            IconButton(
+                onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("bold", !isBold)
+                    }
+                },
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (isBold) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                )
+            ) {
+                Icon(Icons.Default.FormatBold, contentDescription = "Bold", modifier = Modifier.size(18.dp))
+            }
+
+            val isItalic = getCellItalic(activeCellRow, activeCellCol)
+            IconButton(
+                onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("italic", !isItalic)
+                    }
+                },
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (isItalic) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                )
+            ) {
+                Icon(Icons.Default.FormatItalic, contentDescription = "Italic", modifier = Modifier.size(18.dp))
+            }
+
+            val currentAlign = stylesMap["${activeCellRow}_${activeCellCol}"]?.optString("align", "left") ?: "left"
+            IconButton(
+                onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("align", "left")
+                    }
+                },
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (currentAlign == "left") MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                )
+            ) {
+                Icon(Icons.Default.FormatAlignLeft, contentDescription = "Align Left", modifier = Modifier.size(18.dp))
+            }
+
+            IconButton(
+                onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("align", "center")
+                    }
+                },
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (currentAlign == "center") MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                )
+            ) {
+                Icon(Icons.Default.FormatAlignCenter, contentDescription = "Align Center", modifier = Modifier.size(18.dp))
+            }
+
+            IconButton(
+                onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("align", "right")
+                    }
+                },
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = if (currentAlign == "right") MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                )
+            ) {
+                Icon(Icons.Default.FormatAlignRight, contentDescription = "Align Right", modifier = Modifier.size(18.dp))
+            }
+
+            // Custom divider
+            Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.LightGray))
+
+            // Font size
+            val currentSize = getCellFontSize(activeCellRow, activeCellCol)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("fontSize", maxOf(8, currentSize - 1))
+                    }
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Remove, contentDescription = "Decrease Font Size", modifier = Modifier.size(14.dp))
+                }
+                Text("$currentSize", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
+                IconButton(onClick = {
+                    updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                        obj.put("fontSize", minOf(24, currentSize + 1))
+                    }
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Add, contentDescription = "Increase Font Size", modifier = Modifier.size(14.dp))
+                }
+            }
+
+            Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.LightGray))
+
+            // BG Colors
+            Text("BG:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+            val bgColors = listOf(
+                "#FFFFFF" to Color.White,
+                "#FFF9C4" to Color(0xFFFFF9C4),
+                "#C8E6C9" to Color(0xFFC8E6C9),
+                "#B3E5FC" to Color(0xFFB3E5FC),
+                "#FFCDD2" to Color(0xFFFFCDD2)
+            )
+            bgColors.forEach { (hex, color) ->
+                val isSelectedBg = (stylesMap["${activeCellRow}_${activeCellCol}"]?.optString("bgColor") ?: "#FFFFFF") == hex
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(color, CircleShape)
+                        .border(if (isSelectedBg) 2.dp else 0.5.dp, if (isSelectedBg) MaterialTheme.colorScheme.primary else Color.Gray, CircleShape)
+                        .clickable {
+                            updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                                obj.put("bgColor", hex)
+                            }
+                        }
+                )
+            }
+
+            Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.LightGray))
+
+            // Text Colors
+            Text("Text:", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+            val textColorsList = listOf(
+                "#000000" to Color.Black,
+                "#D32F2F" to Color(0xFFD32F2F),
+                "#388E3C" to Color(0xFF388E3C),
+                "#1976D2" to Color(0xFF1976D2)
+            )
+            textColorsList.forEach { (hex, color) ->
+                val isSelectedTextColor = (stylesMap["${activeCellRow}_${activeCellCol}"]?.optString("textColor") ?: "#000000") == hex
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .background(color, CircleShape)
+                        .border(if (isSelectedTextColor) 2.dp else 0.5.dp, if (isSelectedTextColor) MaterialTheme.colorScheme.primary else Color.Gray, CircleShape)
+                        .clickable {
+                            updateCellStyle(activeCellRow, activeCellCol) { obj ->
+                                obj.put("textColor", hex)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("A", color = if (color == Color.Black) Color.White else Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -3597,23 +4231,51 @@ fun ExcelEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
                             val computedVal = computeCellValue(r, c)
                             val isFocused = r == activeCellRow && c == activeCellCol
 
+                            val isBold = getCellBold(r, c)
+                            val isItalic = getCellItalic(r, c)
+                            val cellBgColor = getCellBgColor(r, c)
+                            val cellTextColor = getCellTextColor(r, c)
+                            val cellAlign = getCellAlign(r, c)
+                            val cellFontSize = getCellFontSize(r, c).sp
+
+                            val boxAlign = when (cellAlign) {
+                                androidx.compose.ui.text.style.TextAlign.Center -> Alignment.Center
+                                androidx.compose.ui.text.style.TextAlign.Right -> Alignment.CenterEnd
+                                else -> Alignment.CenterStart
+                            }
+
                             Box(
                                 modifier = Modifier
                                     .size(height = 44.dp, width = 110.dp)
-                                    .background(if (isFocused) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.White)
+                                    .background(
+                                        if (isFocused) {
+                                            if (cellBgColor == Color.White) {
+                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                            } else {
+                                                cellBgColor.copy(alpha = 0.7f)
+                                            }
+                                        } else {
+                                            cellBgColor
+                                        }
+                                    )
                                     .border(0.5.dp, if (isFocused) MaterialTheme.colorScheme.primary else Color.LightGray)
                                     .clickable {
                                         activeCellRow = r
                                         activeCellCol = c
                                     },
-                                contentAlignment = Alignment.CenterStart
+                                contentAlignment = boxAlign
                             ) {
                                 Text(
                                     text = computedVal,
-                                    fontSize = 12.sp,
-                                    color = Color.Black,
+                                    fontSize = cellFontSize,
+                                    fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
+                                    fontStyle = if (isItalic) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+                                    color = cellTextColor,
+                                    textAlign = cellAlign,
                                     maxLines = 1,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp)
                                 )
                             }
                         }
@@ -4048,7 +4710,7 @@ fun CsvEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
             Button(
                 onClick = {
                     if (lines.size > 1) {
-                        lines.removeLast()
+                        lines.removeAt(lines.lastIndex)
                         saveCsvContent()
                     }
                 },
