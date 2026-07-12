@@ -72,5 +72,27 @@ fun MyApplicationTheme(
       else -> LightColorScheme
     }
 
+  val view = androidx.compose.ui.platform.LocalView.current
+  if (!view.isInEditMode) {
+    androidx.compose.runtime.SideEffect {
+      var context = view.context
+      while (context is android.content.ContextWrapper) {
+        if (context is android.app.Activity) {
+          break
+        }
+        context = context.baseContext
+      }
+      val window = (context as? android.app.Activity)?.window
+      if (window != null) {
+        val isDark = themeMode == "dark" || themeMode == "amoled"
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        val controller = androidx.core.view.WindowCompat.getInsetsController(window, view)
+        controller.isAppearanceLightStatusBars = !isDark
+        controller.isAppearanceLightNavigationBars = !isDark
+      }
+    }
+  }
+
   MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
 }

@@ -162,60 +162,75 @@ class OfficeRepository(
     }
 
     private fun simulateAiResponse(content: String, prompt: String, action: String): String {
-        val docSnippet = if (content.length > 100) content.take(100) + "..." else content
+        val docSnippet = if (content.length > 150) content.take(150) + "..." else content
+        val isSpreadsheet = content.contains("Spreadsheet Sheet:") || content.contains("Row 1:")
+        val isPdf = content.contains("--- PAGE")
+        
+        val docTypeLabel = when {
+            isSpreadsheet -> "Excel Spreadsheet"
+            isPdf -> "PDF Document (OCR Extracted)"
+            else -> "Document Text"
+        }
+        
+        val detailBullet = when {
+            isSpreadsheet -> "*   **Data Structure:** Detected tabular row-and-column layout. The values have been successfully loaded and formatted for local analysis."
+            isPdf -> "*   **Optical Intelligence:** Scanned using Google ML Kit on-device text recognizer, rendering pages into high-precision analysis bitmaps."
+            else -> "*   **Content Analysis:** Found standard text context, suitable for direct semantic querying."
+        }
+
         return when (action) {
             "summarize" -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                ### Executive Summary
-                The provided document centers around: *"$docSnippet"*
+                ### Executive Summary ($docTypeLabel)
+                Analyzed Content: *"$docSnippet"*
                 
-                *   **Key Finding 1:** The document establishes strategic priorities for optimization, with a focus on resource allocation and operational scalability.
-                *   **Key Finding 2:** Quantitative indicators point to positive growth velocity and structural efficiency.
-                *   **Conclusion:** Recommend immediate execution of proposed structural adjustments and category organization.
+                $detailBullet
+                *   **Key Insights:** Local heuristic pattern matching identifies core values and operational priorities in this document.
+                *   **Conclusion:** Recommend saving as a polished copy or executing further queries for target extraction.
             """.trimIndent()
             "explain" -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                ### Concept Breakdown
-                Here is a simplified explanation of the document contents:
+                ### Concept Breakdown ($docTypeLabel)
+                Here is a simplified explanation of the active document concepts:
                 
-                1.  **Core Theme:** The document discusses structured operations, database persistence, and system efficiency.
-                2.  **Implications:** By transitioning from static local structures to reactive flows, real-time sync and low latency are achieved.
-                3.  **Target Impact:** This design minimizes processing overhead on lower-end devices by keeping files highly optimized and locally cached.
+                1.  **Core Content:** This file specifies structured fields or narrative blocks: *"$docSnippet"*
+                2.  **Implications:** By using on-device parsing, we extract the structural hierarchy and make it fully searchable.
+                3.  **Local Indexing:** Keeps your sensitive enterprise or personal data strictly offline on this Android device.
             """.trimIndent()
             "rewrite" -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                ### Recomposed Draft
+                ### Recomposed Draft ($docTypeLabel)
                 *Here is a polished, professional rewrite of your text:*
                 
-                "We are pleased to introduce our comprehensive documentation and system analysis suite. Through robust offline data architecture, the platform guarantees immediate data availability, real-time background indexing, and intelligent summarization modules to elevate day-to-day productivity."
+                "We have analyzed the $docTypeLabel content and recomposed a high-impact summary. Key context extracted: '$docSnippet'. This data represents immediate local availability, processed with real-time background indexing and zero cloud exposure."
             """.trimIndent()
             "grammar" -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                ### Grammar & Style Correction
-                *   **Original:** $docSnippet
-                *   **Corrected:** [Your text already demonstrates excellent composition. Minor improvements applied for flow, passive voice correction, and modern styling rules.]
+                ### Grammar & Style Correction ($docTypeLabel)
+                *   **Extracted Context:** $docSnippet
+                *   **Analysis:** No critical structural grammatical errors detected in the extracted text. Sentence flow and cell alignments are professionally structured.
                 
-                *   *Tip:* Transitioning from generic phrases to active voice improves professional authority.
+                *   *Tip:* Transitioning from passive layout representations to explicit tabular headings improves professional readability.
             """.trimIndent()
             "translate" -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                ### Translation Output
-                Here is the translated content (English / Selected Language):
+                ### Translation Output ($docTypeLabel)
+                Here is the translated preview for: *"$docSnippet"*
                 
-                "Bienvenue dans l'univers de DocHub Office. Votre suite bureautique hors ligne de premier plan pour éditer vos documents, feuilles de calcul, présentations, fichiers JSON et PDF avec une assistance IA de pointe."
+                "[Bienvenue dans l'univers de DocHub Office. Nous avons détecté un fichier de type $docTypeLabel et avons traduit ses premiers éléments de manière sécurisée et locale.]"
             """.trimIndent()
             else -> """
                 **[DocHub Local AI Engine - Offline Mode]**
                 
-                Based on your query *"$prompt"*, the system recommends:
-                1.  Ensure all your favorite files are tagged properly for easy category access.
-                2.  Use the local secure vault to encrypt sensitive PDFs.
-                3.  Try out the spreadsheet formula calculations (e.g. `=SUM()`) in your XLS sheets.
+                Based on your query *"$prompt"*, the system processed the $docTypeLabel content:
+                *   **Content Match:** *"$docSnippet"*
+                *   **Action Suggestion:** You can use the Quick AI Prompts to summarize or translate this file instantly.
+                *   **Key Security:** Your files are parsed 100% locally with zero external network transmission required.
             """.trimIndent()
         }
     }

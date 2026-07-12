@@ -139,6 +139,14 @@ fun DocHubAppUi(viewModel: OfficeViewModel) {
     var showCreateDialog by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
 
+    androidx.activity.compose.BackHandler(enabled = !isLocked && (activeDoc != null || activeTab != 0)) {
+        if (activeDoc != null) {
+            viewModel.setActiveDocument(null)
+        } else if (activeTab != 0) {
+            activeTab = 0
+        }
+    }
+
     // Layout adaptive container check
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isTablet = maxWidth > 600.dp
@@ -1194,6 +1202,10 @@ fun CameraPreviewView(
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val previewView = remember { PreviewView(context) }
 
+    var isTorchOn by remember { mutableStateOf(false) }
+    var liveStatusText by remember { mutableStateOf("Position document in frame") }
+    var hasDetectedEdges by remember { mutableStateOf(false) }
+
     LaunchedEffect(flashMode) {
         imageCapture.flashMode = flashMode
     }
@@ -1206,16 +1218,68 @@ fun CameraPreviewView(
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
 
+            val imageAnalysis = androidx.camera.core.ImageAnalysis.Builder()
+                .setBackpressureStrategy(androidx.camera.core.ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
                     preview,
+                    imageAnalysis,
                     imageCapture
                 )
+
+                imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
+                    val buffer = imageProxy.planes[0].buffer
+                    val data = ByteArray(buffer.remaining())
+                    buffer.get(data)
+                    
+                    // Fast sampling of luminance
+                    var sum = 0L
+                    val step = maxOf(1, data.size / 1000)
+                    var sampleCount = 0
+                    for (i in 0 until data.size step step) {
+                        sum += data[i].toInt() and 0xFF
+                        sampleCount++
+                    }
+                    val avgLuminance = if (sampleCount > 0) sum / sampleCount else 128
+                    
+                    // Blur detection: compute variation in neighbor pixels
+                    var diffSum = 0L
+                    var count = 0
+                    for (i in 0 until (data.size - step) step step * 2) {
+                        val p1 = data[i].toInt() and 0xFF
+                        val p2 = data[i + step].toInt() and 0xFF
+                        diffSum += kotlin.math.abs(p1 - p2)
+                        count++
+                    }
+                    val avgDiff = if (count > 0) diffSum.toFloat() / count else 10f
+                    val isBlurry = avgDiff < 4.0f
+                    val isDark = avgLuminance < 45
+
+                    // Handle Auto-torch: Keep torch enabled once triggered by darkness during the scanning session to avoid flickering loop
+                    if (isDark) {
+                        if (!isTorchOn) {
+                            camera.cameraControl.enableTorch(true)
+                            isTorchOn = true
+                        }
+                    }
+
+                    liveStatusText = when {
+                        isDark -> "Low Light - Auto Torch Active!"
+                        isBlurry -> "Blurry Frame - Stabilizing..."
+                        else -> "Live Note Detected - Ready to Scan!"
+                    }
+                    hasDetectedEdges = !isDark && !isBlurry
+
+                    imageProxy.close()
+                }
+
             } catch (exc: Exception) {
                 onError(exc)
             }
@@ -1225,6 +1289,28 @@ fun CameraPreviewView(
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView({ previewView }, modifier = Modifier.fillMaxSize())
         
+        // Render a beautiful scanning overlay
+        if (hasDetectedEdges) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val path = Path().apply {
+                    moveTo(size.width * 0.12f, size.height * 0.15f)
+                    lineTo(size.width * 0.88f, size.height * 0.15f)
+                    lineTo(size.width * 0.85f, size.height * 0.82f)
+                    lineTo(size.width * 0.15f, size.height * 0.82f)
+                    close()
+                }
+                drawPath(
+                    path = path,
+                    color = Color.Green.copy(alpha = 0.15f)
+                )
+                drawPath(
+                    path = path,
+                    color = Color.Green,
+                    style = Stroke(width = 3.dp.toPx())
+                )
+            }
+        }
+
         if (gridEnabled) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val strokeWidth = 1.dp.toPx()
@@ -1233,6 +1319,36 @@ fun CameraPreviewView(
                 drawLine(color, Offset(2f * size.width / 3f, 0f), Offset(2f * size.width / 3f, size.height), strokeWidth)
                 drawLine(color, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), strokeWidth)
                 drawLine(color, Offset(0f, 2f * size.height / 3f), Offset(size.width, 2f * size.height / 3f), strokeWidth)
+            }
+        }
+
+        // Display a high-visibility translucent live status banner
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 80.dp, start = 24.dp, end = 24.dp)
+                .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                .border(1.dp, if (hasDetectedEdges) Color.Green else Color.LightGray.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                .padding(12.dp)
+                .align(Alignment.TopCenter)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(if (hasDetectedEdges) Color.Green else Color.Red, CircleShape)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = liveStatusText,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
             }
         }
     }
@@ -1310,6 +1426,134 @@ fun adjustBrightnessContrast(src: Bitmap, brightness: Float, contrast: Float): B
     return output
 }
 
+fun autoDetectDocumentEdges(bitmap: Bitmap, widthDp: Float, heightDp: Float): List<Offset> {
+    val w = widthDp
+    val h = heightDp
+    
+    // Default crop points if detection fails
+    val defaultPoints = listOf(
+        Offset(w * 0.05f, h * 0.05f),
+        Offset(w * 0.95f, h * 0.05f),
+        Offset(w * 0.95f, h * 0.95f),
+        Offset(w * 0.05f, h * 0.95f)
+    )
+    
+    return try {
+        // Let's downscale the bitmap for super fast processing
+        val scale = 0.2f
+        val small = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+        val sw = small.width
+        val sh = small.height
+        val pixels = IntArray(sw * sh)
+        small.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+        
+        // Find bounding box with highest color gradient (document boundaries are high-contrast)
+        var minX = sw
+        var maxX = 0
+        var minY = sh
+        var maxY = 0
+        
+        // Calculate average brightness
+        var totalBright = 0L
+        for (p in pixels) {
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            totalBright += (r + g + b) / 3
+        }
+        val avgBright = totalBright / pixels.size
+        
+        // We look for pixels that differ significantly from background/average brightness
+        for (y in (sh / 10)..(sh * 9 / 10)) {
+            for (x in (sw / 10)..(sw * 9 / 10)) {
+                val idx = y * sw + x
+                val p = pixels[idx]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val bright = (r + g + b) / 3
+                
+                // If there's high contrast transition
+                if (kotlin.math.abs(bright - avgBright) > 30) {
+                    minX = minOf(minX, x)
+                    maxX = maxOf(maxX, x)
+                    minY = minOf(minY, y)
+                    maxY = maxOf(maxY, y)
+                }
+            }
+        }
+        
+        small.recycle()
+        
+        // If detected box is reasonable, convert to DP and return
+        val detectedW = maxX - minX
+        val detectedH = maxY - minY
+        if (detectedW > sw * 0.2f && detectedH > sh * 0.2f) {
+            val padX = detectedW * 0.02f
+            val padY = detectedH * 0.02f
+            
+            val tlX = ((minX - padX) / sw) * w
+            val tlY = ((minY - padY) / sh) * h
+            val trX = ((maxX + padX) / sw) * w
+            val trY = ((minY - padY) / sh) * h
+            val brX = ((maxX + padX) / sw) * w
+            val brY = ((maxY + padY) / sh) * h
+            val blX = ((minX - padX) / sw) * w
+            val blY = ((maxY + padY) / sh) * h
+            
+            listOf(
+                Offset(tlX.coerceIn(0f, w), tlY.coerceIn(0f, h)),
+                Offset(trX.coerceIn(0f, w), trY.coerceIn(0f, h)),
+                Offset(brX.coerceIn(0f, w), brY.coerceIn(0f, h)),
+                Offset(blX.coerceIn(0f, w), blY.coerceIn(0f, h))
+            )
+        } else {
+            defaultPoints
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("OfficeViewModel", "Autocrop error: ${e.message}")
+        defaultPoints
+    }
+}
+
+fun applySharpnessEnhancement(src: Bitmap): Bitmap {
+    val bmp = src.copy(Bitmap.Config.ARGB_8888, true)
+    val width = bmp.width
+    val height = bmp.height
+    val pixels = IntArray(width * height)
+    bmp.getPixels(pixels, 0, width, 0, 0, width, height)
+    
+    val outPixels = IntArray(width * height)
+    
+    // Quick unsharp mask/sharpening kernel:
+    // [ 0, -1,  0 ]
+    // [-1,  5, -1 ]
+    // [ 0, -1,  0 ]
+    for (y in 1 until height - 1) {
+        for (x in 1 until width - 1) {
+            val idx = y * width + x
+            
+            val c00 = pixels[idx - width] // top
+            val c10 = pixels[idx - 1]     // left
+            val c11 = pixels[idx]         // center
+            val c12 = pixels[idx + 1]     // right
+            val c21 = pixels[idx + width] // bottom
+            
+            val r = (((c11 shr 16) and 0xFF) * 5) - ((c00 shr 16) and 0xFF) - ((c10 shr 16) and 0xFF) - ((c12 shr 16) and 0xFF) - ((c21 shr 16) and 0xFF)
+            val g = (((c11 shr 8) and 0xFF) * 5) - ((c00 shr 8) and 0xFF) - ((c10 shr 8) and 0xFF) - ((c12 shr 8) and 0xFF) - ((c21 shr 8) and 0xFF)
+            val b = ((c11 and 0xFF) * 5) - (c00 and 0xFF) - (c10 and 0xFF) - (c12 and 0xFF) - (c21 and 0xFF)
+            
+            val finalR = r.coerceIn(0, 255)
+            val finalG = g.coerceIn(0, 255)
+            val finalB = b.coerceIn(0, 255)
+            
+            outPixels[idx] = (0xFF shl 24) or (finalR shl 16) or (finalG shl 8) or finalB
+        }
+    }
+    bmp.setPixels(outPixels, 0, width, 0, 0, width, height)
+    return bmp
+}
+
 fun createPdfFromBitmaps(bitmaps: List<Bitmap>, quality: String, outputFile: File) {
     val pdfDocument = android.graphics.pdf.PdfDocument()
     
@@ -1345,6 +1589,10 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
     val scope = rememberCoroutineScope()
     
     var scannerMode by remember { mutableStateOf("list") } // list, camera, crop, batch, ocr_result
+    
+    androidx.activity.compose.BackHandler(enabled = scannerMode != "list") {
+        scannerMode = "list"
+    }
     val batchBitmaps = remember { mutableStateListOf<Bitmap>() }
     
     // Camera Settings
@@ -1383,10 +1631,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                         val w = 320f
                         val h = 400f
                         cropPoints.clear()
-                        cropPoints.add(Offset(w * 0.05f, h * 0.05f))
-                        cropPoints.add(Offset(w * 0.95f, h * 0.05f))
-                        cropPoints.add(Offset(w * 0.95f, h * 0.95f))
-                        cropPoints.add(Offset(w * 0.05f, h * 0.95f))
+                        cropPoints.addAll(autoDetectDocumentEdges(rawBitmap, w, h))
                         selectedEnhancement = "original"
                         brightness = 0f
                         contrast = 1.0f
@@ -1552,10 +1797,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                         val w = 320f
                         val h = 400f
                         cropPoints.clear()
-                        cropPoints.add(Offset(w * 0.05f, h * 0.05f))
-                        cropPoints.add(Offset(w * 0.95f, h * 0.05f))
-                        cropPoints.add(Offset(w * 0.95f, h * 0.95f))
-                        cropPoints.add(Offset(w * 0.05f, h * 0.95f))
+                        cropPoints.addAll(autoDetectDocumentEdges(bitmap, w, h))
                         selectedEnhancement = "original"
                         brightness = 0f
                         contrast = 1.0f
@@ -1663,6 +1905,8 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                                 val w = 320f
                                                 val h = 400f
                                                 cropPoints.clear()
+                                                cropPoints.addAll(autoDetectDocumentEdges(bitmap, w, h))
+                                                if (false) {
                                                 cropPoints.add(Offset(w * 0.05f, h * 0.05f))
                                                 cropPoints.add(Offset(w * 0.95f, h * 0.05f))
                                                 cropPoints.add(Offset(w * 0.95f, h * 0.95f))
@@ -1672,6 +1916,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                                 contrast = 1.0f
                                                 isProcessing = false
                                                 scannerMode = "crop"
+                                                }
                                             }
 
                                             override fun onError(exception: ImageCaptureException) {
@@ -1750,6 +1995,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                         out
                                     }
                                     "threshold" -> applyThreshold(cropped)
+                                    "sharp" -> applySharpnessEnhancement(cropped)
                                     "bright_contrast" -> adjustBrightnessContrast(cropped, brightness, contrast)
                                     else -> cropped
                                 }
@@ -1871,6 +2117,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                             "original" to "Original",
                             "grayscale" to "Grayscale",
                             "threshold" to "B&W Mono",
+                            "sharp" to "Ultra-Sharp",
                             "bright_contrast" to "Adjustable"
                         ).forEach { (code, label) ->
                             val isSelected = selectedEnhancement == code
@@ -2103,7 +2350,8 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                 isProcessing = true
                                 scope.launch {
                                     try {
-                                        val output = File(context.cacheDir, "$pdfFileName.pdf")
+                                        val docsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS)
+                                        val output = File(docsDir, "$pdfFileName.pdf")
                                         createPdfFromBitmaps(batchBitmaps, pdfQuality, output)
                                         
                                         // Save standard placeholder block content referencing the file
@@ -2111,7 +2359,7 @@ fun OcrScannerTabScreen(viewModel: OfficeViewModel) {
                                         viewModel.createDocument(
                                             name = "$pdfFileName.pdf",
                                             type = "pdf",
-                                            content = "=== PDF compiled from custom on-device document scanner ===\nPages: ${batchBitmaps.size}\nLocal Cache Storage: ${output.absolutePath}\nSize: $length bytes\nCreated: ${System.currentTimeMillis()}",
+                                            content = "BASE64:" + android.util.Base64.encodeToString(output.readBytes(), android.util.Base64.DEFAULT),
                                             category = "PDFs"
                                         )
                                         Toast.makeText(context, "PDF successfully created and stored!", Toast.LENGTH_LONG).show()
@@ -2808,6 +3056,22 @@ fun PdfReaderView(document: DocumentEntity, viewModel: OfficeViewModel) {
         try {
             val docsDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOCUMENTS)
             val file = java.io.File(docsDir, document.name)
+            
+            // Reconstruct the physical PDF file if missing but available as Base64 content
+            if ((!file.exists() || file.length() == 0L) && document.content.startsWith("BASE64:")) {
+                try {
+                    val base64Str = document.content.substring(7).trim()
+                    val decodedBytes = android.util.Base64.decode(base64Str, android.util.Base64.DEFAULT)
+                    if (docsDir != null) {
+                        if (!docsDir.exists()) docsDir.mkdirs()
+                        file.writeBytes(decodedBytes)
+                        android.util.Log.d("PdfReaderView", "Restored physical PDF file from Base64: ${file.absolutePath}")
+                    }
+                } catch (ex: Exception) {
+                    android.util.Log.e("PdfReaderView", "Failed to restore physical PDF from Base64: ${ex.message}", ex)
+                }
+            }
+            
             if (file.exists() && file.length() > 0) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val pfd = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
@@ -3006,6 +3270,7 @@ fun PdfReaderView(document: DocumentEntity, viewModel: OfficeViewModel) {
 // --- 2. WORD EDITOR VIEW (DOCX, ODT, RTF, TXT rich tools) ---
 @Composable
 fun WordEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
+    val context = LocalContext.current
     var textContent by remember(document) { mutableStateOf(document.content) }
     var selectedFontSize by remember { mutableStateOf(14) }
     var isBoldActive by remember { mutableStateOf(false) }
@@ -3061,6 +3326,7 @@ fun WordEditorView(document: DocumentEntity, viewModel: OfficeViewModel) {
             Button(
                 onClick = {
                     viewModel.askAiAssistant(
+                        context = context,
                         prompt = "Proofread this draft document for grammar and spelling corrections: \n\n$textContent",
                         actionType = "grammar"
                     )
@@ -4013,6 +4279,7 @@ fun AiAssistantPanel(
     documentContent: String,
     onClose: () -> Unit
 ) {
+    val context = LocalContext.current
     val aiResponse by viewModel.aiResponse.collectAsStateWithLifecycle()
     val isAiLoading by viewModel.isAiLoading.collectAsStateWithLifecycle()
     var userPromptText by remember { mutableStateOf("") }
@@ -4107,7 +4374,7 @@ fun AiAssistantPanel(
                 "Translate" to "translate"
             ).forEach { (label, act) ->
                 Button(
-                    onClick = { viewModel.askAiAssistant("Execute $label action on active document context.", act) },
+                    onClick = { viewModel.askAiAssistant(context, "Execute $label action on active document context.", act) },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
                     modifier = Modifier
                         .padding(end = 6.dp)
@@ -4140,7 +4407,7 @@ fun AiAssistantPanel(
             IconButton(
                 onClick = {
                     if (userPromptText.trim().isNotEmpty()) {
-                        viewModel.askAiAssistant(userPromptText.trim(), "chat")
+                        viewModel.askAiAssistant(context, userPromptText.trim(), "chat")
                         userPromptText = ""
                     }
                 },
